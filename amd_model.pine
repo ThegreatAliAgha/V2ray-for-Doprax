@@ -1,0 +1,168 @@
+// © jules-v
+//@version=5
+indicator("Accumulation Manipulation Distribution (AMD Model)", overlay=true, max_boxes_count = 500)
+
+// --- User Inputs ---
+min_box_len = input.int(10, title="Minimum Box Length", tooltip="Minimum number of candles to form an accumulation box.")
+max_box_len = input.int(100, title="Maximum Box Length", tooltip="Maximum number of candles a potential box can be before invalidation.")
+atr_multiplier = input.float(0.5, title="ATR Multiplier", step=0.1, tooltip="ATR multiplier to define low volatility.")
+range_percent = input.float(0.25, title="Price Range Percentage", step=0.05, tooltip="Maximum price range as a percentage of the mid price.")
+vol_threshold = input.float(1.0, title="Volume Threshold", step=0.1, tooltip="Volume multiplier for manipulation breakout.")
+
+// --- State Machine ---
+var string state = "SEARCHING" // SEARCHING, CONFIRMED
+
+// --- Potential Box Tracking ---
+var int potential_box_start_bar = na
+var float potential_box_high = na
+var float potential_box_low = na
+var int top_touches = 0
+var int bottom_touches = 0
+var int small_body_candles = 0
+var float highest_vol_in_range = 0
+var float poc_price_in_range = na
+
+// --- Confirmed Box Variables ---
+var box confirmed_box = na
+var line poc_line = na
+var float confirmed_box_high = na
+var float confirmed_box_low = na
+var int confirmed_box_start_bar = na
+
+// --- Breakout Tracking ---
+var int breakout_confirmation_count = 0
+var bool breakout_up = false
+
+// --- Manipulation Tracking ---
+var bool manipulation_detected = false
+var bool manipulation_alert = false
+var bool distribution_alert = false
+
+// --- Main Logic ---
+// Pre-calculate ATR and Volume SMA for efficiency
+float atr20 = ta.atr(20)
+float avg_vol20 = ta.sma(volume, 20)
+float long_avg_atr = ta.sma(atr20, 200)
+
+// This script operates as a state machine, building the logic forward bar-by-bar.
+// 1. SEARCHING: It assesses each new bar to see if it can start or extend a potential accumulation range.
+// 2. CONFIRMED: A valid accumulation box has been found and drawn. The script now monitors this static box.
+
+if (state == "SEARCHING")
+    // --- Start or extend a potential box ---
+    if (na(potential_box_start_bar))
+        // Start a new potential box
+        potential_box_start_bar := bar_index
+        potential_box_high := high
+        potential_box_low := low
+        top_touches := 1
+        bottom_touches := 1
+        small_body_candles := 0
+        highest_vol_in_range := volume
+        poc_price_in_range := hlc3
+    else
+        // Correct Touch Counting and Box Extension
+        if (high >= potential_box_high)
+            top_touches += 1
+            potential_box_high := high
+        if (low <= potential_box_low)
+            bottom_touches += 1
+            potential_box_low := low
+
+        if (volume > highest_vol_in_range)
+            highest_vol_in_range := volume
+            poc_price_in_range := hlc3
+
+    // --- Validate the potential box ---
+    int box_len = bar_index - potential_box_start_bar + 1
+    float mid_price = (potential_box_high + potential_box_low) / 2
+    bool is_tight = ((potential_box_high - potential_box_low) / mid_price) * 100 <= range_percent
+
+    // Invalidate if the range becomes too wide or the box gets too long
+    if (not is_tight or box_len > max_box_len)
+        potential_box_start_bar := na // Reset and start a new search on the next bar
+        small_body_candles := 0 // Correct Small Body Count Reset
+    else if (box_len >= min_box_len)
+        // --- Efficient Condition Validation ---
+        bool is_low_atr = ta.sma(atr20, box_len) <= long_avg_atr[box_len] * atr_multiplier
+        bool is_high_vol = ta.sma(volume, box_len) >= avg_vol20[box_len]
+
+        is_small_body_bar = (high - low > 0) and (math.abs(close - open) / (high - low) < 0.7)
+        small_body_candles := small_body_candles + (is_small_body_bar ? 1 : 0)
+
+        bool has_enough_small_bodies = (small_body_candles / box_len) >= 0.6
+        bool is_valid = is_low_atr and is_high_vol and has_enough_small_bodies and top_touches >= 2 and bottom_touches >= 2
+
+        if (is_valid)
+            // --- CONFIRM BOX ---
+            state := "CONFIRMED"
+            confirmed_box_high := potential_box_high
+            confirmed_box_low := potential_box_low
+            confirmed_box_start_bar := potential_box_start_bar
+
+            // --- Draw Box and POC (One-Time) ---
+            confirmed_box := box.new(confirmed_box_start_bar, confirmed_box_high, bar_index, confirmed_box_low, border_color=color.new(color.yellow, 50), bgcolor=color.new(color.yellow, 90))
+            poc_line := line.new(confirmed_box_start_bar, poc_price_in_range, bar_index, poc_price_in_range, color=color.red, width=2)
+            // Reset tracking variables for the next phase
+            manipulation_detected := false
+            breakout_confirmation_count := 0
+
+// This logic only runs after a box has been confirmed.
+if (state == "CONFIRMED")
+    // Extend the right edge of the box and POC line to the current bar for visibility.
+    box.set_right(confirmed_box, bar_index)
+    line.set_x2(poc_line, bar_index)
+
+    // --- Manipulation Detection ---
+    is_breakout = high > confirmed_box_high or low < confirmed_box_low
+    is_close_inside = close < confirmed_box_high and close > confirmed_box_low
+    is_high_vol_breakout = volume > avg_vol20 * vol_threshold
+
+    if (is_breakout and is_close_inside and is_high_vol_breakout and not manipulation_detected)
+        label.new(bar_index, high, "Manipulation", color=color.orange, textcolor=color.white, style=label.style_labeldown)
+        manipulation_detected := true
+        manipulation_alert := true
+    else
+        manipulation_alert := false
+
+    // --- Distribution Detection ---
+    is_close_outside = close > confirmed_box_high or close < confirmed_box_low
+    if (is_close_outside)
+        if (breakout_confirmation_count == 0)
+            // This is the first bar of a potential breakout.
+            breakout_up := close > confirmed_box_high
+            breakout_confirmation_count := 1
+        else
+            // This is a subsequent bar. Check if it continues the breakout direction.
+            if ((breakout_up and close > confirmed_box_high) or (not breakout_up and close < confirmed_box_low))
+                breakout_confirmation_count += 1
+            else
+                // The direction reversed, so reset the counter.
+                breakout_confirmation_count := 0
+    else
+        // Price is back inside the box, so reset the counter.
+        breakout_confirmation_count := 0
+
+    if (breakout_confirmation_count >= 3)
+        // Three consecutive closes outside the box confirms distribution.
+        label.new(bar_index, high, "Distribution", color=color.red, textcolor=color.white, style=label.style_labeldown)
+        distribution_alert := true
+
+        if (breakout_up)
+            label.new(bar_index, high, "▲", color=color.new(color.green, 0), textcolor=color.green, style=label.style_arrowup)
+        else
+            label.new(bar_index, low, "▼", color=color.new(color.red, 0), textcolor=color.red, style=label.style_arrowdown)
+
+        // --- Reset the State Machine ---
+        state := "SEARCHING"
+        potential_box_start_bar := na
+        box.delete(confirmed_box)
+        line.delete(poc_line)
+        confirmed_box := na
+        poc_line := na
+    else
+        distribution_alert := false
+
+// --- Alerts ---
+alertcondition(manipulation_alert, title="Manipulation Detected", message="Possible manipulation event detected.")
+alertcondition(distribution_alert, title="Distribution Confirmed", message="Distribution phase confirmed.")
