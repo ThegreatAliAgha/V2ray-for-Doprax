@@ -1,0 +1,409 @@
+//@version=5
+indicator("Accumulation Manipulation Distribution (AMD Model)", shorttitle="AMD Model", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+// ============================================================================
+// INPUT PARAMETERS
+// ============================================================================
+
+// Accumulation Detection Parameters
+atr_multiplier = input.float(0.5, "ATR Multiplier", minval=0.1, maxval=2.0, step=0.1, group="Accumulation Settings")
+min_bar_count = input.int(10, "Minimum Bar Count", minval=5, maxval=50, group="Accumulation Settings")
+range_percentage = input.float(0.25, "Range Percentage (%)", minval=0.1, maxval=1.0, step=0.05, group="Accumulation Settings")
+volume_threshold = input.float(1.0, "Volume Threshold", minval=0.5, maxval=3.0, step=0.1, group="Accumulation Settings")
+small_body_threshold = input.float(0.6, "Small Body Threshold", minval=0.3, maxval=0.9, step=0.05, group="Accumulation Settings")
+
+// Visual Settings
+show_poc = input.bool(true, "Show POC Line", group="Visual Settings")
+show_arrows = input.bool(true, "Show Breakout Arrows", group="Visual Settings")
+box_transparency = input.int(80, "Box Transparency", minval=0, maxval=100, group="Visual Settings")
+
+// Alert Settings
+enable_alerts = input.bool(true, "Enable Alerts", group="Alert Settings")
+
+// ============================================================================
+// VARIABLES AND ARRAYS
+// ============================================================================
+
+var array<box> accumulation_boxes = array.new<box>()
+var array<line> poc_lines = array.new<line>()
+var int box_start_bar = na
+var float box_high = na
+var float box_low = na
+var int box_length = 0
+var bool is_compression = false
+var bool fake_break = false
+var bool real_break = false
+var float poc_price = na
+var int poc_volume = 0
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Function to check if a candle has a small body
+is_small_body() =>
+    body_size = math.abs(close - open)
+    candle_range = high - low
+    candle_range > 0 ? body_size / candle_range < small_body_threshold : false
+
+// Function to calculate ATR
+atr_value = ta.atr(20)
+
+// Function to check if price is in tight range
+is_tight_range(start_bar, end_bar) =>
+    if end_bar - start_bar < min_bar_count - 1
+        false
+    else
+        range_high = ta.highest(high, end_bar - start_bar + 1)
+        range_low = ta.lowest(low, end_bar - start_bar + 1)
+        mid_price = (range_high + range_low) / 2
+        range_size = range_high - range_low
+        range_size <= (mid_price * range_percentage / 100)
+
+// Function to check ATR condition
+atr_condition_met(start_bar, end_bar) =>
+    if end_bar - start_bar < min_bar_count - 1
+        false
+    else
+        // Calculate ATR inside the box
+        atr_inside = 0.0
+        for i = start_bar to end_bar
+            if i >= 0
+                atr_inside += atr_value[i]
+        atr_inside := atr_inside / (end_bar - start_bar + 1)
+        
+        // Calculate average ATR outside the box (before the box)
+        atr_outside = 0.0
+        outside_count = 0
+        for i = start_bar + 20 to start_bar + 40
+            if i >= 0 and i < bar_index
+                atr_outside += atr_value[i]
+                outside_count += 1
+        atr_outside := outside_count > 0 ? atr_outside / outside_count : atr_inside
+        
+        atr_inside <= (atr_outside * atr_multiplier)
+
+// Function to check volume condition
+volume_condition_met(start_bar, end_bar) =>
+    if end_bar - start_bar < min_bar_count - 1
+        false
+    else
+        // Calculate average volume inside the box
+        total_volume = 0.0
+        for i = start_bar to end_bar
+            if i >= 0
+                total_volume += volume[i]
+        avg_volume_inside = total_volume / (end_bar - start_bar + 1)
+        
+        // Calculate average volume of last 20 candles
+        avg_volume_20 = ta.sma(volume, 20)
+        
+        avg_volume_inside >= (avg_volume_20 * volume_threshold)
+
+// Function to check for small bodies
+small_bodies_condition_met(start_bar, end_bar) =>
+    if end_bar - start_bar < min_bar_count - 1
+        false
+    else
+        small_body_count = 0
+        total_candles = end_bar - start_bar + 1
+        for i = start_bar to end_bar
+            if i >= 0 and is_small_body()[i]
+                small_body_count += 1
+        small_body_count / total_candles >= small_body_threshold
+
+// Function to check for boundary touches
+boundary_touches_condition_met(start_bar, end_bar, box_high_val, box_low_val) =>
+    if end_bar - start_bar < min_bar_count - 1
+        false
+    else
+        top_touches = 0
+        bottom_touches = 0
+        
+        for i = start_bar to end_bar
+            if i >= 0
+                // Check for top boundary touches
+                if high[i] >= box_high_val * 0.999 // Allow small tolerance
+                    top_touches += 1
+                // Check for bottom boundary touches
+                if low[i] <= box_low_val * 1.001 // Allow small tolerance
+                    bottom_touches += 1
+        
+        top_touches >= 2 and bottom_touches >= 2
+
+// Function to calculate POC (Point of Control)
+calculate_poc(start_bar, end_bar, box_high_val, box_low_val) =>
+    poc_price_val = na
+    max_volume = 0
+    
+    // Create price levels within the box
+    price_levels = array.new<float>()
+    step = (box_high_val - box_low_val) / 20
+    for i = 0 to 19
+        array.push(price_levels, box_low_val + (i * step))
+    
+    // Calculate volume at each price level
+    for level_idx = 0 to array.size(price_levels) - 1
+        level_price = array.get(price_levels, level_idx)
+        level_volume = 0.0
+        
+        for i = start_bar to end_bar
+            if i >= 0
+                // Check if this bar's price range intersects with the level
+                if low[i] <= level_price and high[i] >= level_price
+                    // Estimate volume contribution (simplified)
+                    level_volume += volume[i] / 20
+        
+        if level_volume > max_volume
+            max_volume := level_volume
+            poc_price_val := level_price
+    
+    poc_price_val
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+
+// Check if we're in a potential accumulation phase
+if not is_compression
+    // Look for new accumulation box
+    if bar_index >= min_bar_count
+        // Check conditions for accumulation
+        potential_start = bar_index - min_bar_count
+        potential_end = bar_index
+        
+        // Get box boundaries
+        box_high_candidate = ta.highest(high, min_bar_count)
+        box_low_candidate = ta.lowest(low, min_bar_count)
+        
+        // Check all conditions
+        tight_range_ok = is_tight_range(potential_start, potential_end)
+        atr_ok = atr_condition_met(potential_start, potential_end)
+        volume_ok = volume_condition_met(potential_start, potential_end)
+        small_bodies_ok = small_bodies_condition_met(potential_start, potential_end)
+        touches_ok = boundary_touches_condition_met(potential_start, potential_end, box_high_candidate, box_low_candidate)
+        
+        if tight_range_ok and atr_ok and volume_ok and small_bodies_ok and touches_ok
+            // Start new accumulation box
+            is_compression := true
+            box_start_bar := potential_start
+            box_high := box_high_candidate
+            box_low := box_low_candidate
+            box_length := min_bar_count
+            
+            // Calculate POC
+            poc_price := calculate_poc(potential_start, potential_end, box_high_candidate, box_low_candidate)
+            
+            // Draw the box
+            new_box = box.new(
+                left=bar_index - min_bar_count,
+                top=box_high_candidate,
+                right=bar_index,
+                bottom=box_low_candidate,
+                bgcolor=color.new(color.yellow, box_transparency),
+                border_color=color.yellow,
+                border_width=1
+            )
+            array.push(accumulation_boxes, new_box)
+            
+            // Draw POC line
+            if show_poc and not na(poc_price)
+                poc_line = line.new(
+                    x1=bar_index - min_bar_count,
+                    y1=poc_price,
+                    x2=bar_index,
+                    y2=poc_price,
+                    color=color.red,
+                    width=2,
+                    style=line.style_solid
+                )
+                array.push(poc_lines, poc_line)
+
+// Update existing accumulation box
+if is_compression
+    box_length += 1
+    
+    // Update box boundaries
+    current_high = ta.highest(high, box_length)
+    current_low = ta.lowest(low, box_length)
+    
+    // Check if we should extend the box
+    if current_high <= box_high * 1.001 and current_low >= box_low * 0.999
+        box_high := current_high
+        box_low := current_low
+        
+        // Update the box visual
+        if array.size(accumulation_boxes) > 0
+            last_box = array.get(accumulation_boxes, array.size(accumulation_boxes) - 1)
+            box.set_right(last_box, bar_index)
+            box.set_top(last_box, box_high)
+            box.set_bottom(last_box, box_low)
+        
+        // Update POC line
+        if show_poc and array.size(poc_lines) > 0
+            last_poc = array.get(poc_lines, array.size(poc_lines) - 1)
+            line.set_x2(last_poc, bar_index)
+    else
+        // Box conditions no longer met, end compression
+        is_compression := false
+        box_start_bar := na
+        box_high := na
+        box_low := na
+        box_length := 0
+        poc_price := na
+
+// Check for manipulation (fake breakout)
+if is_compression and not na(box_high) and not na(box_low)
+    // Check for breakout above
+    if high > box_high
+        if close < box_high and volume > ta.sma(volume, 20)
+            fake_break := true
+            label.new(
+                x=bar_index,
+                y=high,
+                text="Manipulation",
+                color=color.orange,
+                textcolor=color.white,
+                style=label.style_label_down,
+                size=size.normal
+            )
+            if enable_alerts
+                alert("Manipulation detected - Fake breakout above accumulation box", alert.freq_once_per_bar)
+    
+    // Check for breakout below
+    if low < box_low
+        if close > box_low and volume > ta.sma(volume, 20)
+            fake_break := true
+            label.new(
+                x=bar_index,
+                y=low,
+                text="Manipulation",
+                color=color.orange,
+                textcolor=color.white,
+                style=label.style_label_up,
+                size=size.normal
+            )
+            if enable_alerts
+                alert("Manipulation detected - Fake breakout below accumulation box", alert.freq_once_per_bar)
+
+// Check for distribution (real breakout)
+if is_compression and not na(box_high) and not na(box_low)
+    // Check for real breakout above
+    if close > box_high
+        // Check next two candles also close above
+        if bar_index >= 2
+            next_close_1 = close[1]
+            next_close_2 = close[2]
+            if next_close_1 > box_high and next_close_2 > box_high
+                real_break := true
+                label.new(
+                    x=bar_index,
+                    y=high,
+                    text="Distribution",
+                    color=color.red,
+                    textcolor=color.white,
+                    style=label.style_label_down,
+                    size=size.normal
+                )
+                if show_arrows
+                    arrow.new(
+                        x1=bar_index,
+                        y1=high,
+                        x2=bar_index,
+                        y2=high + (box_high - box_low) * 0.1,
+                        color=color.red,
+                        style=arrow.style_up,
+                        size=size.normal
+                    )
+                if enable_alerts
+                    alert("Distribution detected - Real breakout above accumulation box", alert.freq_once_per_bar)
+    
+    // Check for real breakout below
+    if close < box_low
+        // Check next two candles also close below
+        if bar_index >= 2
+            next_close_1 = close[1]
+            next_close_2 = close[2]
+            if next_close_1 < box_low and next_close_2 < box_low
+                real_break := true
+                label.new(
+                    x=bar_index,
+                    y=low,
+                    text="Distribution",
+                    color=color.red,
+                    textcolor=color.white,
+                    style=label.style_label_up,
+                    size=size.normal
+                )
+                if show_arrows
+                    arrow.new(
+                        x1=bar_index,
+                        y1=low,
+                        x2=bar_index,
+                        y2=low - (box_high - box_low) * 0.1,
+                        color=color.red,
+                        style=arrow.style_down,
+                        size=size.normal
+                    )
+                if enable_alerts
+                    alert("Distribution detected - Real breakout below accumulation box", alert.freq_once_per_bar)
+
+// Clean up old boxes and lines to prevent memory issues
+if array.size(accumulation_boxes) > 100
+    old_box = array.shift(accumulation_boxes)
+    box.delete(old_box)
+
+if array.size(poc_lines) > 100
+    old_line = array.shift(poc_lines)
+    line.delete(old_line)
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+// Plot POC line if enabled
+plot(show_poc and not na(poc_price) and is_compression ? poc_price : na, "POC", color.red, linewidth=2)
+
+// Plot box boundaries for reference
+plot(is_compression and not na(box_high) ? box_high : na, "Box High", color.yellow, linewidth=1)
+plot(is_compression and not na(box_low) ? box_low : na, "Box Low", color.yellow, linewidth=1)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+// Alert conditions
+alertcondition(fake_break, title="Manipulation Alert", message="Fake breakout detected - Manipulation")
+alertcondition(real_break, title="Distribution Alert", message="Real breakout detected - Distribution")
+alertcondition(is_compression, title="Accumulation Alert", message="Accumulation box detected")
+
+// ============================================================================
+// TABLE FOR INFORMATION DISPLAY
+// ============================================================================
+
+if barstate.islast
+    var table info_table = table.new(position.top_right, 2, 6, bgcolor=color.white, border_width=1)
+    
+    table.cell(info_table, 0, 0, "Status", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 0, is_compression ? "Accumulation" : "Searching", 
+               text_color=is_compression ? color.yellow : color.gray, text_size=size.small)
+    
+    table.cell(info_table, 0, 1, "Box Length", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 1, str.tostring(box_length), text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 2, "Box High", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 2, not na(box_high) ? str.tostring(box_high, "#.####") : "N/A", 
+               text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 3, "Box Low", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 3, not na(box_low) ? str.tostring(box_low, "#.####") : "N/A", 
+               text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 4, "POC", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 4, not na(poc_price) ? str.tostring(poc_price, "#.####") : "N/A", 
+               text_color=color.red, text_size=size.small)
+    
+    table.cell(info_table, 0, 5, "Last Signal", text_color=color.black, text_size=size.small)
+    last_signal = fake_break ? "Manipulation" : real_break ? "Distribution" : "None"
+    signal_color = fake_break ? color.orange : real_break ? color.red : color.gray
+    table.cell(info_table, 1, 5, last_signal, text_color=signal_color, text_size=size.small)
