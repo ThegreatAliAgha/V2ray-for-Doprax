@@ -1,0 +1,321 @@
+//@version=5
+indicator("Accumulation Manipulation Distribution (AMD Model)", shorttitle="AMD Model", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+// ============================================================================
+// INPUT PARAMETERS
+// ============================================================================
+
+// Accumulation Detection Parameters
+atr_multiplier = input.float(0.5, "ATR Multiplier", minval=0.1, maxval=2.0, step=0.1, group="Accumulation Detection")
+min_bars = input.int(10, "Minimum Bar Count", minval=5, maxval=50, group="Accumulation Detection")
+range_percentage = input.float(0.25, "Range Percentage (%)", minval=0.1, maxval=1.0, step=0.05, group="Accumulation Detection")
+volume_threshold = input.float(1.0, "Volume Threshold", minval=0.5, maxval=3.0, step=0.1, group="Accumulation Detection")
+body_threshold = input.float(60.0, "Small Body Percentage (%)", minval=40.0, maxval=90.0, step=5.0, group="Accumulation Detection")
+
+// Visual Settings
+show_poc = input.bool(true, "Show POC Line", group="Visual Settings")
+box_color = input.color(color.yellow, "Accumulation Box Color", group="Visual Settings")
+poc_color = input.color(color.red, "POC Line Color", group="Visual Settings")
+manipulation_color = input.color(color.orange, "Manipulation Label Color", group="Visual Settings")
+distribution_color = input.color(color.red, "Distribution Label Color", group="Visual Settings")
+
+// Alert Settings
+enable_alerts = input.bool(true, "Enable Alerts", group="Alerts")
+alert_manipulation = input.bool(true, "Alert on Manipulation", group="Alerts")
+alert_distribution = input.bool(true, "Alert on Distribution", group="Alerts")
+
+// ============================================================================
+// VARIABLES
+// ============================================================================
+
+var float atr_20 = na
+var float avg_volume_20 = na
+var float mid_price = na
+var float price_range = na
+var float atr_inside = na
+var float atr_outside = na
+var float atr_ratio = na
+var int small_body_count = 0
+var int total_candles = 0
+var float small_body_percentage = 0.0
+var float volume_ratio = 0.0
+var int top_touches = 0
+var int bottom_touches = 0
+
+// Accumulation Box Variables
+var box accumulation_box = na
+var float box_top = na
+var float box_bottom = na
+var int box_start = na
+var int box_end = na
+var bool is_compression = false
+var float poc_price = na
+var line poc_line = na
+
+// Manipulation and Distribution Variables
+var bool fake_break = false
+var bool real_break = false
+var int manipulation_bar = na
+var int distribution_bar = na
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+// Function to check if candle has small body
+is_small_body() =>
+    body_size = math.abs(close - open)
+    candle_range = high - low
+    candle_range > 0 ? (body_size / candle_range) < 0.3 : false
+
+// Function to calculate ATR inside a range
+calc_atr_inside(start_bar, end_bar) =>
+    if end_bar - start_bar < 1
+        na
+    else
+        sum_atr = 0.0
+        count = 0
+        for i = start_bar to end_bar
+            if i >= 0 and i < bar_index
+                tr = math.max(high[i] - low[i], math.max(math.abs(high[i] - close[i+1]), math.abs(low[i] - close[i+1])))
+                sum_atr += tr
+                count += 1
+        count > 0 ? sum_atr / count : na
+
+// Function to calculate ATR outside a range
+calc_atr_outside(start_bar, end_bar) =>
+    if start_bar < 20
+        na
+    else
+        sum_atr = 0.0
+        count = 0
+        // Calculate ATR for 20 bars before the range
+        for i = math.max(0, start_bar - 20) to start_bar - 1
+            if i >= 0 and i < bar_index
+                tr = math.max(high[i] - low[i], math.max(math.abs(high[i] - close[i+1]), math.abs(low[i] - close[i+1])))
+                sum_atr += tr
+                count += 1
+        count > 0 ? sum_atr / count : na
+
+// Function to calculate VWAP within a range
+calc_vwap_inside(start_bar, end_bar) =>
+    if end_bar - start_bar < 1
+        na
+    else
+        sum_volume_price = 0.0
+        sum_volume = 0.0
+        for i = start_bar to end_bar
+            if i >= 0 and i < bar_index
+                typical_price = (high[i] + low[i] + close[i]) / 3
+                sum_volume_price += typical_price * volume[i]
+                sum_volume += volume[i]
+        sum_volume > 0 ? sum_volume_price / sum_volume : na
+
+// ============================================================================
+// MAIN LOGIC
+// ============================================================================
+
+// Calculate ATR and average volume
+atr_20 := ta.atr(20)
+avg_volume_20 := ta.sma(volume, 20)
+
+// Calculate mid price and price range for current potential accumulation
+if bar_index >= min_bars
+    // Calculate price range for the last min_bars
+    highest_high = ta.highest(high, min_bars)
+    lowest_low = ta.lowest(low, min_bars)
+    mid_price := (highest_high + lowest_low) / 2
+    price_range := highest_high - lowest_low
+    
+    // Calculate ATR inside and outside the potential range
+    atr_inside := calc_atr_inside(bar_index - min_bars, bar_index - 1)
+    atr_outside := calc_atr_outside(bar_index - min_bars, bar_index - 1)
+    
+    // Calculate ATR ratio
+    atr_ratio := atr_outside > 0 ? atr_inside / atr_outside : na
+    
+    // Count small body candles
+    small_body_count := 0
+    for i = 0 to min_bars - 1
+        if is_small_body()[i]
+            small_body_count += 1
+    
+    small_body_percentage := (small_body_count / min_bars) * 100
+    
+    // Calculate volume ratio
+    volume_inside = 0.0
+    for i = 0 to min_bars - 1
+        volume_inside += volume[i]
+    avg_volume_inside = volume_inside / min_bars
+    volume_ratio := avg_volume_20 > 0 ? avg_volume_inside / avg_volume_20 : na
+    
+    // Count touches on top and bottom boundaries
+    top_touches := 0
+    bottom_touches := 0
+    tolerance = price_range * 0.01 // 1% tolerance for touches
+    
+    for i = 0 to min_bars - 1
+        if math.abs(high[i] - highest_high) <= tolerance
+            top_touches += 1
+        if math.abs(low[i] - lowest_low) <= tolerance
+            bottom_touches += 1
+
+// ============================================================================
+// ACCUMULATION DETECTION
+// ============================================================================
+
+// Check if current range meets accumulation criteria
+is_compression := atr_ratio <= atr_multiplier and 
+                  price_range <= (mid_price * range_percentage / 100) and 
+                  small_body_percentage >= body_threshold and 
+                  volume_ratio >= volume_threshold and 
+                  top_touches >= 2 and 
+                  bottom_touches >= 2 and 
+                  not na(atr_ratio) and 
+                  not na(volume_ratio)
+
+// Create or update accumulation box
+if is_compression and not is_compression[1]
+    // Start new accumulation box
+    box_start := bar_index
+    box_top := ta.highest(high, min_bars)
+    box_bottom := ta.lowest(low, min_bars)
+    
+    // Calculate POC
+    poc_price := calc_vwap_inside(bar_index - min_bars, bar_index - 1)
+    
+    // Draw accumulation box
+    if not na(accumulation_box)
+        box.delete(accumulation_box)
+    accumulation_box := box.new(box_start, box_top, bar_index, box_bottom, 
+                               border_color=box_color, bgcolor=color.new(box_color, 90), 
+                               border_width=2)
+    
+    // Draw POC line
+    if show_poc and not na(poc_price)
+        if not na(poc_line)
+            line.delete(poc_line)
+        poc_line := line.new(box_start, poc_price, bar_index, poc_price, 
+                            color=poc_color, width=2, style=line.style_dashed)
+
+else if is_compression and is_compression[1]
+    // Update existing accumulation box
+    box_top := math.max(box_top, high)
+    box_bottom := math.min(box_bottom, low)
+    box_end := bar_index
+    
+    if not na(accumulation_box)
+        box.set_right(accumulation_box, bar_index)
+        box.set_top(accumulation_box, box_top)
+        box.set_bottom(accumulation_box, box_bottom)
+    
+    // Update POC line
+    if show_poc and not na(poc_line)
+        line.set_x2(poc_line, bar_index)
+
+else if not is_compression and is_compression[1]
+    // End accumulation phase
+    if not na(accumulation_box)
+        box.delete(accumulation_box)
+        accumulation_box := na
+    if not na(poc_line)
+        line.delete(poc_line)
+        poc_line := na
+
+// ============================================================================
+// MANIPULATION DETECTION
+// ============================================================================
+
+// Check for manipulation (fake breakout)
+if is_compression[1] and not is_compression
+    // Check if price broke out but closed back inside
+    breakout_above = high > box_top
+    breakout_below = low < box_bottom
+    close_inside = close < box_top and close > box_bottom
+    high_volume = volume > avg_volume_20 * 1.2
+    
+    if (breakout_above or breakout_below) and close_inside and high_volume
+        fake_break := true
+        manipulation_bar := bar_index
+        
+        // Create manipulation label
+        label.new(bar_index, high, "Manipulation", 
+                 color=manipulation_color, textcolor=color.white, 
+                 style=label.style_label_down, size=size.small)
+        
+        // Alert
+        if enable_alerts and alert_manipulation
+            alert("Manipulation detected at " + str.tostring(close), alert.freq_once_per_bar)
+
+// ============================================================================
+// DISTRIBUTION DETECTION
+// ============================================================================
+
+// Check for distribution (real breakout)
+if is_compression[1] and not is_compression
+    // Check if price closed outside the box
+    close_above_box = close > box_top
+    close_below_box = close < box_bottom
+    
+    if close_above_box or close_below_box
+        // Check next two candles for confirmation
+        if bar_index >= 2
+            next_candle_1_above = close[1] > box_top
+            next_candle_1_below = close[1] < box_bottom
+            next_candle_2_above = close[2] > box_top
+            next_candle_2_below = close[2] < box_bottom
+            
+            // Confirm distribution
+            if (close_above_box and next_candle_1_above and next_candle_2_above) or
+               (close_below_box and next_candle_1_below and next_candle_2_below)
+                real_break := true
+                distribution_bar := bar_index
+                
+                // Create distribution label
+                label_y = close_above_box ? high : low
+                label_style = close_above_box ? label.style_label_down : label.style_label_up
+                label.new(bar_index, label_y, "Distribution", 
+                         color=distribution_color, textcolor=color.white, 
+                         style=label_style, size=size.normal)
+                
+                // Draw arrow
+                arrow_y = close_above_box ? low : high
+                arrow_style = close_above_box ? shape.arrowup : shape.arrowdown
+                shape.new(bar_index, arrow_y, arrow_style, color=distribution_color, size=size.small)
+                
+                // Alert
+                if enable_alerts and alert_distribution
+                    alert("Distribution detected at " + str.tostring(close), alert.freq_once_per_bar)
+
+// ============================================================================
+// PLOTTING
+// ============================================================================
+
+// Plot POC if not using line
+if show_poc and not na(poc_price) and is_compression
+    plot(poc_price, "POC", color=poc_color, linewidth=2, style=plot.style_line)
+
+// ============================================================================
+// TABLE FOR INFORMATION DISPLAY
+// ============================================================================
+
+if barstate.islast and is_compression
+    var table info_table = table.new(position.top_right, 2, 6, bgcolor=color.white, border_width=1)
+    
+    table.cell(info_table, 0, 0, "AMD Model Status", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 0, "Accumulation", text_color=color.yellow, text_size=size.small)
+    
+    table.cell(info_table, 0, 1, "ATR Ratio", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 1, str.tostring(atr_ratio, "#.##"), text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 2, "Price Range %", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 2, str.tostring((price_range / mid_price) * 100, "#.##"), text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 3, "Small Body %", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 3, str.tostring(small_body_percentage, "#.##"), text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 4, "Volume Ratio", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 4, str.tostring(volume_ratio, "#.##"), text_color=color.black, text_size=size.small)
+    
+    table.cell(info_table, 0, 5, "POC", text_color=color.black, text_size=size.small)
+    table.cell(info_table, 1, 5, str.tostring(poc_price, "#.##"), text_color=color.red, text_size=size.small)
