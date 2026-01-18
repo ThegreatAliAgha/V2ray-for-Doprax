@@ -33,6 +33,31 @@ is_time_before(h, m) =>
     int ny_m = minute(time, "America/New_York")
     (ny_h * 60 + ny_m) < (h * 60 + m)
 
+// Helper for status text
+get_status_text(s) =>
+    if s == 0
+        "Waiting"
+    else if s == 1
+        "Bullish Breakout"
+    else if s == 2
+        "Bearish Breakout"
+    else if s == 3
+        "Success"
+    else if s == 4
+        "Failed"
+    else
+        "Unknown"
+
+get_status_color(s) =>
+    if s == 0
+        color.gray
+    else if s == 1 or s == 3
+        color.green
+    else if s == 2 or s == 4
+        color.red
+    else
+        color.gray
+
 // -----------------------------------------------------------------------------
 // State Management
 // -----------------------------------------------------------------------------
@@ -268,31 +293,6 @@ if barstate.islast
     table.cell(dash, 1, 0, "Status", text_color=color.white, text_size=size.small)
     table.cell(dash, 2, 0, "Win Rate", text_color=color.white, text_size=size.small)
     table.cell(dash, 3, 0, "Count", text_color=color.white, text_size=size.small)
-
-    // Helper for status text
-    get_status_text(s) =>
-        if s == 0
-            "Waiting"
-        else if s == 1
-            "Bullish Breakout"
-        else if s == 2
-            "Bearish Breakout"
-        else if s == 3
-            "Success"
-        else if s == 4
-            "Failed"
-        else
-            "Unknown"
-
-    get_status_color(s) =>
-        if s == 0
-            color.gray
-        else if s == 1 or s == 3
-            color.green
-        else if s == 2 or s == 4
-            color.red
-        else
-            color.gray
 
     // 10m Row
     table.cell(dash, 0, 1, "10m OR", text_color=color.white, text_size=size.small)
