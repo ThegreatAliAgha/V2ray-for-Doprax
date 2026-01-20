@@ -4,19 +4,41 @@ indicator("NQ Opening Range & IB Stats", overlay=true, max_lines_count=500, max_
 // -----------------------------------------------------------------------------
 // Settings & Inputs
 // -----------------------------------------------------------------------------
-var string GRP_TIME = "Target Time Settings"
-target_short_h = input.int(11, "Target Hour (10m & 15m)", minval=0, maxval=23, group=GRP_TIME)
-target_short_m = input.int(30, "Target Minute (10m & 15m)", minval=0, maxval=59, group=GRP_TIME)
+var string GRP_R1 = "Range 1 Settings"
+r1_enabled = input.bool(true, "Enable Range 1", group=GRP_R1)
+r1_start_h = input.int(9,  "Start Hour", minval=0, maxval=23, group=GRP_R1)
+r1_start_m = input.int(30, "Start Minute", minval=0, maxval=59, group=GRP_R1)
+r1_end_h   = input.int(9,  "End Hour", minval=0, maxval=23, group=GRP_R1)
+r1_end_m   = input.int(40, "End Minute", minval=0, maxval=59, group=GRP_R1)
+r1_target_h = input.int(11, "Target Hour", minval=0, maxval=23, group=GRP_R1)
+r1_target_m = input.int(30, "Target Minute", minval=0, maxval=59, group=GRP_R1)
+r1_color_box = input.color(color.new(color.gray, 90), "Box Color", group=GRP_R1)
+r1_color_bull = input.color(color.green, "Bullish Line Color", group=GRP_R1)
+r1_color_bear = input.color(color.red, "Bearish Line Color", group=GRP_R1)
 
-target_long_h  = input.int(14, "Target Hour (30m)", minval=0, maxval=23, group=GRP_TIME)
-target_long_m  = input.int(0,  "Target Minute (30m)", minval=0, maxval=59, group=GRP_TIME)
+var string GRP_R2 = "Range 2 Settings"
+r2_enabled = input.bool(true, "Enable Range 2", group=GRP_R2)
+r2_start_h = input.int(9,  "Start Hour", minval=0, maxval=23, group=GRP_R2)
+r2_start_m = input.int(30, "Start Minute", minval=0, maxval=59, group=GRP_R2)
+r2_end_h   = input.int(9,  "End Hour", minval=0, maxval=23, group=GRP_R2)
+r2_end_m   = input.int(45, "End Minute", minval=0, maxval=59, group=GRP_R2)
+r2_target_h = input.int(11, "Target Hour", minval=0, maxval=23, group=GRP_R2)
+r2_target_m = input.int(30, "Target Minute", minval=0, maxval=59, group=GRP_R2)
+r2_color_box = input.color(color.new(color.blue, 95), "Box Color", group=GRP_R2)
+r2_color_bull = input.color(color.green, "Bullish Line Color", group=GRP_R2)
+r2_color_bear = input.color(color.red, "Bearish Line Color", group=GRP_R2)
 
-// We use specific integers for hour/minute checks to avoid string parsing overhead in loop
-// 09:30 is start.
-// 09:40 is 10m end.
-// 09:45 is 15m end.
-// 10:00 is 30m end.
-// 10:30 is IB end.
+var string GRP_R3 = "Range 3 Settings"
+r3_enabled = input.bool(true, "Enable Range 3", group=GRP_R3)
+r3_start_h = input.int(9,  "Start Hour", minval=0, maxval=23, group=GRP_R3)
+r3_start_m = input.int(30, "Start Minute", minval=0, maxval=59, group=GRP_R3)
+r3_end_h   = input.int(10, "End Hour", minval=0, maxval=23, group=GRP_R3)
+r3_end_m   = input.int(0,  "End Minute", minval=0, maxval=59, group=GRP_R3)
+r3_target_h = input.int(14, "Target Hour", minval=0, maxval=23, group=GRP_R3)
+r3_target_m = input.int(0,  "Target Minute", minval=0, maxval=59, group=GRP_R3)
+r3_color_box = input.color(color.new(color.orange, 90), "Box Color", group=GRP_R3)
+r3_color_bull = input.color(color.green, "Bullish Line Color", group=GRP_R3)
+r3_color_bear = input.color(color.red, "Bearish Line Color", group=GRP_R3)
 
 // -----------------------------------------------------------------------------
 // Functions
@@ -32,6 +54,14 @@ is_time_before(h, m) =>
     int ny_h = hour(time, "America/New_York")
     int ny_m = minute(time, "America/New_York")
     (ny_h * 60 + ny_m) < (h * 60 + m)
+
+get_val_in_range(start_h, start_m, end_h, end_m) =>
+    int ny_h = hour(time, "America/New_York")
+    int ny_m = minute(time, "America/New_York")
+    int current_mins = ny_h * 60 + ny_m
+    int start_mins = start_h * 60 + start_m
+    int end_mins = end_h * 60 + end_m
+    current_mins >= start_mins and current_mins < end_mins
 
 // Helper for status text
 get_status_text(s) =>
@@ -93,21 +123,17 @@ var int total_15 = 0
 var int wins_30 = 0
 var int total_30 = 0
 
-// Reset variables at the start of a new trading day (09:30 NY)
-// We detect 09:30 start
-is_new_day = false
-int ny_hour = hour(time, "America/New_York")
-int ny_minute = minute(time, "America/New_York")
-
-if ny_hour == 9 and ny_minute == 30
-    is_new_day := true
-    or10_high := high
-    or10_low  := low
-    or15_high := high
-    or15_low  := low
-    or30_high := high
-    or30_low  := low
-    ib_high   := high
+// Reset variables at the start of a new trading day
+// We detect new day by change in dayofweek/dayofmonth
+is_new_day = ta.change(time("D"))
+if is_new_day
+    or10_high := na // Set to na initially, will be set to High/Low on first valid bar
+    or10_low  := na
+    or15_high := na
+    or15_low  := na
+    or30_high := na
+    or30_low  := na
+    ib_high   := high // Keeping IB hardcoded to 09:30 start logic as per original request, or reset
     ib_low    := low
     ib_open   := open
 
@@ -124,51 +150,42 @@ if ny_hour == 9 and ny_minute == 30
 // Logic: Update Ranges
 // -----------------------------------------------------------------------------
 
-// Only update if we are in the session (after 09:30) and before the end of the specific range
-if not is_new_day and ny_hour >= 9 // Simple check to ensure we are not pre-market (assuming chart has pre-market)
-    // 10 Minute Range (09:30 - 09:40)
-    // We want to capture data UP TO 09:40:00 open.
-    // Standard interpretation: The 09:30 bar (on 10m timeframe) closes at 09:40.
-    // On 5m chart: 09:30 and 09:35 bars. 09:40 bar is the start of next period.
-    // So we update if time < 09:40
-    if is_time_before(9, 40)
-        or10_high := math.max(or10_high, high)
-        or10_low  := math.min(or10_low, low)
+// We update ranges if current time is >= Start and < End
+// Range 1
+if r1_enabled and get_val_in_range(r1_start_h, r1_start_m, r1_end_h, r1_end_m)
+    or10_high := na(or10_high) ? high : math.max(or10_high, high)
+    or10_low  := na(or10_low) ? low : math.min(or10_low, low)
 
-    // 15 Minute Range (09:30 - 09:45)
-    if is_time_before(9, 45)
-        or15_high := math.max(or15_high, high)
-        or15_low  := math.min(or15_low, low)
+// Range 2
+if r2_enabled and get_val_in_range(r2_start_h, r2_start_m, r2_end_h, r2_end_m)
+    or15_high := na(or15_high) ? high : math.max(or15_high, high)
+    or15_low  := na(or15_low) ? low : math.min(or15_low, low)
 
-    // 30 Minute Range (09:30 - 10:00)
-    if is_time_before(10, 00)
-        or30_high := math.max(or30_high, high)
-        or30_low  := math.min(or30_low, low)
+// Range 3
+if r3_enabled and get_val_in_range(r3_start_h, r3_start_m, r3_end_h, r3_end_m)
+    or30_high := na(or30_high) ? high : math.max(or30_high, high)
+    or30_low  := na(or30_low) ? low : math.min(or30_low, low)
 
-    // IB (09:30 - 10:30)
-    if is_time_before(10, 30)
-        ib_high := math.max(ib_high, high)
-        ib_low  := math.min(ib_low, low)
+// IB (09:30 - 10:30) - Keeping this hardcoded for now as it's a specific concept,
+// or we could assume it starts at 09:30 always.
+if is_time_at_or_after(9, 30) and is_time_before(10, 30)
+    // Need to handle reset carefully if IB starts mid-day, but 09:30 is standard.
+    // If it's a new day, we already reset.
+    // Just ensure we capture proper high/low.
+    ib_high := na(ib_high) ? high : math.max(ib_high, high)
+    ib_low  := na(ib_low) ? low : math.min(ib_low, low)
+    if is_new_day // Reset open if it's the very first bar of day (likely 09:30)
+        ib_open := open
+    // If our chart starts before 09:30, we need to capture open at 09:30
+    if hour(time, "America/New_York") == 9 and minute(time, "America/New_York") == 30
+        ib_open := open
 
 
 // -----------------------------------------------------------------------------
 // Logic: Initial Balance Display (at 10:30 Close)
 // -----------------------------------------------------------------------------
-// We need to trigger exactly when the 10:25 5m candle closes (time is 10:30)
-// Or generally, just once 10:30 is reached.
 if not ib_drawn and is_time_at_or_after(10, 30)
-    ib_close = close[1] // The close of the candle that just finished (10:25-10:30)
-    // Actually, on 5m chart, the candle starting at 10:25 closes at 10:30.
-    // So at 10:30 timestamp (candle open), we look at close[1].
-    // Note: if on 1m chart, we might be looking at 10:29 close.
-    // To be precise on 5m chart:
-    // If current bar time is 10:30, previous bar was 10:25.
-
-    // Let's rely on the accumulated high/low and the close of the last bar of the period.
-    // Since we stop updating IB vars at 10:30, the 'close' at 10:30 is actually the start of next hour.
-    // We want the close price at 10:30.
-    // To handle this robustly: at 10:30 bar, the close of IB is close[1].
-
+    // Simple IB logic
     float final_ib_close = close[1]
 
     // Draw logic
@@ -185,82 +202,66 @@ if not ib_drawn and is_time_at_or_after(10, 30)
 // -----------------------------------------------------------------------------
 
 // Helper to process range logic
-process_range(high_lvl, low_lvl, state, current_wins, current_total, target_h, target_m, range_name) =>
+process_range(high_lvl, low_lvl, state, current_wins, current_total, target_h, target_m, range_name, start_h, start_m, end_h, end_m, enabled, c_box, c_bull, c_bear) =>
     int s = state
     int w = current_wins
     int t = current_total
 
-    // 1. Check for Breakout if Waiting (0)
-    // Must be AFTER the range formation is done.
-    // OR10 ends 09:40. OR15 ends 09:45. OR30 ends 10:00.
-    bool range_formed = false
-    if range_name == "10m"
-        range_formed := is_time_at_or_after(9, 40)
-    else if range_name == "15m"
-        range_formed := is_time_at_or_after(9, 45)
-    else if range_name == "30m"
-        range_formed := is_time_at_or_after(10, 00)
+    if not enabled
+        [s, w, t] // Return unchanged if disabled
+    else
+        // 1. Check for Breakout if Waiting (0)
+        // Must be AFTER the range formation is done.
+        bool range_formed = is_time_at_or_after(end_h, end_m)
 
-    // Target time timestamp
-    bool target_reached = is_time_at_or_after(target_h, target_m)
+        // Target time timestamp
+        bool target_reached = is_time_at_or_after(target_h, target_m)
 
-    if s == 0 and range_formed and not target_reached
-        if close > high_lvl
-            s := 1 // Bullish Breakout
-            t := t + 1
-            // Draw Box/Line from opposite (low) to target time
-            // We use 'time' + difference to target.
-            // Simple approach: draw line from current bar to predicted bar time?
-            // Better: use line.new with x2 using timestamp.
+        if s == 0 and range_formed and not target_reached
+            if close > high_lvl
+                s := 1 // Bullish Breakout
+                t := t + 1
+                int target_ts = timestamp("America/New_York", year(time), month(time), dayofmonth(time), target_h, target_m, 0)
+                line.new(bar_index, low_lvl, bar_index + 10, low_lvl, xloc=xloc.bar_index, color=c_bull, style=line.style_dashed, width=2)
+                line.new(time, low_lvl, target_ts, low_lvl, xloc=xloc.bar_time, color=c_bull, style=line.style_solid, width=2)
 
-            // Calculate target timestamp for today
-            int target_ts = timestamp("America/New_York", year(time), month(time), dayofmonth(time), target_h, target_m, 0)
+            else if close < low_lvl
+                s := 2 // Bearish Breakout
+                t := t + 1
+                int target_ts = timestamp("America/New_York", year(time), month(time), dayofmonth(time), target_h, target_m, 0)
+                line.new(time, high_lvl, target_ts, high_lvl, xloc=xloc.bar_time, color=c_bear, style=line.style_solid, width=2)
 
-            // Draw line at LOW level (Safe zone boundary)
-            line.new(bar_index, low_lvl, bar_index + 10, low_lvl, xloc=xloc.bar_index, color=color.green, style=line.style_dashed, width=2)
-            // Note: extending to exact time with xloc.bar_time is cleaner
-            line.new(time, low_lvl, target_ts, low_lvl, xloc=xloc.bar_time, color=color.green, style=line.style_solid, width=2)
+        // 2. Monitor Active Breakout (1 or 2)
+        else if (s == 1 or s == 2) and not target_reached
+            if s == 1 and low < low_lvl
+                s := 4 // Failed
+                label.new(bar_index, low, range_name + " Fail", style=label.style_label_up, color=color.orange, size=size.small)
+            else if s == 2 and high > high_lvl
+                s := 4 // Failed
+                label.new(bar_index, high, range_name + " Fail", style=label.style_label_down, color=color.orange, size=size.small)
 
-        else if close < low_lvl
-            s := 2 // Bearish Breakout
-            t := t + 1
-            int target_ts = timestamp("America/New_York", year(time), month(time), dayofmonth(time), target_h, target_m, 0)
-            line.new(time, high_lvl, target_ts, high_lvl, xloc=xloc.bar_time, color=color.red, style=line.style_solid, width=2)
+        // 3. Check Success at Target Time
+        else if (s == 1 or s == 2) and target_reached
+            s := 3 // Finished/Win
+            w := w + 1
+            label.new(bar_index, close, range_name + " Success", style=label.style_label_center, color=color.blue, size=size.small)
 
-    // 2. Monitor Active Breakout (1 or 2)
-    else if (s == 1 or s == 2) and not target_reached
-        // Check Failure
-        if s == 1 and low < low_lvl // Bullish breakout but price dipped below Low
-            s := 4 // Failed
-            // Visual fail?
-            label.new(bar_index, low, range_name + " Fail", style=label.style_label_up, color=color.orange, size=size.small)
-        else if s == 2 and high > high_lvl // Bearish breakout but price went above High
-            s := 4 // Failed
-            label.new(bar_index, high, range_name + " Fail", style=label.style_label_down, color=color.orange, size=size.small)
-
-    // 3. Check Success at Target Time
-    else if (s == 1 or s == 2) and target_reached
-        // If we reached target and haven't failed yet, it's a win
-        s := 3 // Finished/Win
-        w := w + 1
-        label.new(bar_index, close, range_name + " Success", style=label.style_label_center, color=color.blue, size=size.small)
-
-    [s, w, t]
+        [s, w, t]
 
 
 // Execute Logic
 // Passed variables instead of hardcoded values
-[s10, w10, t10] = process_range(or10_high, or10_low, state_10, wins_10, total_10, target_short_h, target_short_m, "10m")
+[s10, w10, t10] = process_range(or10_high, or10_low, state_10, wins_10, total_10, r1_target_h, r1_target_m, "R1", r1_start_h, r1_start_m, r1_end_h, r1_end_m, r1_enabled, r1_color_box, r1_color_bull, r1_color_bear)
 state_10 := s10
 wins_10  := w10
 total_10 := t10
 
-[s15, w15, t15] = process_range(or15_high, or15_low, state_15, wins_15, total_15, target_short_h, target_short_m, "15m")
+[s15, w15, t15] = process_range(or15_high, or15_low, state_15, wins_15, total_15, r2_target_h, r2_target_m, "R2", r2_start_h, r2_start_m, r2_end_h, r2_end_m, r2_enabled, r2_color_box, r2_color_bull, r2_color_bear)
 state_15 := s15
 wins_15  := w15
 total_15 := t15
 
-[s30, w30, t30] = process_range(or30_high, or30_low, state_30, wins_30, total_30, target_long_h, target_long_m, "30m")
+[s30, w30, t30] = process_range(or30_high, or30_low, state_30, wins_30, total_30, r3_target_h, r3_target_m, "R3", r3_start_h, r3_start_m, r3_end_h, r3_end_m, r3_enabled, r3_color_box, r3_color_bull, r3_color_bear)
 state_30 := s30
 wins_30  := w30
 total_30 := t30
@@ -269,18 +270,20 @@ total_30 := t30
 // -----------------------------------------------------------------------------
 // Visuals: Range Boxes (Optional but helpful)
 // -----------------------------------------------------------------------------
-// Draw the initial ranges for visual reference
-if is_time_at_or_after(9, 40) and not or10_drawn
-    box.new(time - (10*60*1000), or10_high, time, or10_low, xloc=xloc.bar_time, border_color=color.gray, border_style=line.style_dotted, bgcolor=color.new(color.gray, 90))
-    or10_drawn := true
+// Helper to draw boxes
+draw_range_box(drawn, enabled, end_h, end_m, start_h, start_m, high_v, low_v, c_box) =>
+    bool d = drawn
+    if enabled and is_time_at_or_after(end_h, end_m) and not d
+        // Calculate start time in millis.
+        // Diff in minutes
+        int diff_min = (end_h * 60 + end_m) - (start_h * 60 + start_m)
+        box.new(time - (diff_min * 60 * 1000), high_v, time, low_v, xloc=xloc.bar_time, border_color=color.gray, border_style=line.style_dotted, bgcolor=c_box)
+        d := true
+    d
 
-if is_time_at_or_after(9, 45) and not or15_drawn
-    // Just drawing top/bottom lines or faint box to distinguish
-    or15_drawn := true
-
-if is_time_at_or_after(10, 00) and not or30_drawn
-    box.new(time - (30*60*1000), or30_high, time, or30_low, xloc=xloc.bar_time, border_color=color.black, border_width=1, bgcolor=color.new(color.blue, 95))
-    or30_drawn := true
+or10_drawn := draw_range_box(or10_drawn, r1_enabled, r1_end_h, r1_end_m, r1_start_h, r1_start_m, or10_high, or10_low, r1_color_box)
+or15_drawn := draw_range_box(or15_drawn, r2_enabled, r2_end_h, r2_end_m, r2_start_h, r2_start_m, or15_high, or15_low, r2_color_box)
+or30_drawn := draw_range_box(or30_drawn, r3_enabled, r3_end_h, r3_end_m, r3_start_h, r3_start_m, or30_high, or30_low, r3_color_box)
 
 
 // -----------------------------------------------------------------------------
@@ -295,22 +298,31 @@ if barstate.islast
     table.cell(dash, 3, 0, "Count", text_color=color.white, text_size=size.small)
 
     // 10m Row
-    table.cell(dash, 0, 1, "10m OR", text_color=color.white, text_size=size.small)
-    table.cell(dash, 1, 1, get_status_text(state_10), text_color=get_status_color(state_10), text_size=size.small)
-    float wr10 = total_10 > 0 ? (wins_10 / total_10) * 100 : 0
-    table.cell(dash, 2, 1, str.tostring(wr10, "#.##") + "%", text_color=color.white, text_size=size.small)
-    table.cell(dash, 3, 1, str.tostring(wins_10) + "/" + str.tostring(total_10), text_color=color.white, text_size=size.small)
+    if r1_enabled
+        table.cell(dash, 0, 1, "R1", text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, 1, get_status_text(state_10), text_color=get_status_color(state_10), text_size=size.small)
+        float wr10 = total_10 > 0 ? (wins_10 / total_10) * 100 : 0
+        table.cell(dash, 2, 1, str.tostring(wr10, "#.##") + "%", text_color=color.white, text_size=size.small)
+        table.cell(dash, 3, 1, str.tostring(wins_10) + "/" + str.tostring(total_10), text_color=color.white, text_size=size.small)
+    else
+        table.cell(dash, 0, 1, "R1 (Off)", text_color=color.gray, text_size=size.small)
 
     // 15m Row
-    table.cell(dash, 0, 2, "15m OR", text_color=color.white, text_size=size.small)
-    table.cell(dash, 1, 2, get_status_text(state_15), text_color=get_status_color(state_15), text_size=size.small)
-    float wr15 = total_15 > 0 ? (wins_15 / total_15) * 100 : 0
-    table.cell(dash, 2, 2, str.tostring(wr15, "#.##") + "%", text_color=color.white, text_size=size.small)
-    table.cell(dash, 3, 2, str.tostring(wins_15) + "/" + str.tostring(total_15), text_color=color.white, text_size=size.small)
+    if r2_enabled
+        table.cell(dash, 0, 2, "R2", text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, 2, get_status_text(state_15), text_color=get_status_color(state_15), text_size=size.small)
+        float wr15 = total_15 > 0 ? (wins_15 / total_15) * 100 : 0
+        table.cell(dash, 2, 2, str.tostring(wr15, "#.##") + "%", text_color=color.white, text_size=size.small)
+        table.cell(dash, 3, 2, str.tostring(wins_15) + "/" + str.tostring(total_15), text_color=color.white, text_size=size.small)
+    else
+        table.cell(dash, 0, 2, "R2 (Off)", text_color=color.gray, text_size=size.small)
 
     // 30m Row
-    table.cell(dash, 0, 3, "30m OR", text_color=color.white, text_size=size.small)
-    table.cell(dash, 1, 3, get_status_text(state_30), text_color=get_status_color(state_30), text_size=size.small)
-    float wr30 = total_30 > 0 ? (wins_30 / total_30) * 100 : 0
-    table.cell(dash, 2, 3, str.tostring(wr30, "#.##") + "%", text_color=color.white, text_size=size.small)
-    table.cell(dash, 3, 3, str.tostring(wins_30) + "/" + str.tostring(total_30), text_color=color.white, text_size=size.small)
+    if r3_enabled
+        table.cell(dash, 0, 3, "R3", text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, 3, get_status_text(state_30), text_color=get_status_color(state_30), text_size=size.small)
+        float wr30 = total_30 > 0 ? (wins_30 / total_30) * 100 : 0
+        table.cell(dash, 2, 3, str.tostring(wr30, "#.##") + "%", text_color=color.white, text_size=size.small)
+        table.cell(dash, 3, 3, str.tostring(wins_30) + "/" + str.tostring(total_30), text_color=color.white, text_size=size.small)
+    else
+        table.cell(dash, 0, 3, "R3 (Off)", text_color=color.gray, text_size=size.small)
