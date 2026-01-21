@@ -1,4 +1,7 @@
 //@version=5
+// IMPORTANT: When pasting this code into TradingView, make sure to overwrite/clear any existing code
+// in the editor window. The "2 declarations" error occurs if this script is pasted below another indicator.
+
 indicator("NASDAQ Opening Gap [NY Session]", shorttitle="NQ Gap", overlay=true, max_lines_count=500, max_labels_count=500)
 
 // -----------------------------------------------------------------------------
