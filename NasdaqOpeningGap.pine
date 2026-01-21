@@ -1,0 +1,170 @@
+//@version=5
+indicator("NASDAQ Opening Gap [NY Session]", shorttitle="NQ Gap", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// -----------------------------------------------------------------------------
+// Constants and Inputs
+// -----------------------------------------------------------------------------
+GROUP_VISUAL = "Visual Settings"
+color_bullish = input.color(color.green, "Bullish Gap Color", group=GROUP_VISUAL)
+color_bearish = input.color(color.red, "Bearish Gap Color", group=GROUP_VISUAL)
+color_text    = input.color(color.white, "Text Color", group=GROUP_VISUAL)
+
+GROUP_STATS = "Historical Fill Probabilities (Text)"
+// Users can update these strings based on their specific statistical research
+prob_xs = input.string("Very High", "Gap < 0.2%", group=GROUP_STATS)
+prob_s  = input.string("High",      "Gap 0.2% - 0.4%", group=GROUP_STATS)
+prob_m  = input.string("Moderate",  "Gap 0.4% - 0.7%", group=GROUP_STATS)
+prob_l  = input.string("Low",       "Gap 0.7% - 1.0%", group=GROUP_STATS)
+prob_xl = input.string("Very Low",  "Gap 1.0% - 1.5%", group=GROUP_STATS)
+prob_xxl= input.string("Extremely Low", "Gap > 1.5%", group=GROUP_STATS)
+
+// -----------------------------------------------------------------------------
+// Time & Session Logic
+// -----------------------------------------------------------------------------
+// NQ RTH Session: 09:30 - 16:00 New York
+session_spec = "0930-1600"
+time_in_session = time(timeframe.period, session_spec, "America/New_York")
+is_in_session = not na(time_in_session)
+
+// Detect Start of Session (New Day)
+// We check if we are in session and the previous bar was NOT in session (or from a previous day)
+// Note: On 1m chart, time difference is small.
+// Using ta.change(time("D")) matches the prompt's request for "Daily opening gap" logic
+// but we need specifically the 09:30 start.
+// Combining session check is safer for Intraday logic.
+// Simple check: is_in_session and not is_in_session[1] is robust if there are ETH bars.
+// If there are NO ETH bars (gap in data), we need to check if the day changed.
+is_session_start = is_in_session and (not is_in_session[1] or (dayofmonth(time) != dayofmonth(time[1])))
+
+// -----------------------------------------------------------------------------
+// State Variables
+// -----------------------------------------------------------------------------
+var float closing_price_tracker = na // Tracks close during RTH to capture 16:00 close
+var float prev_day_close = na        // Stores the finalized close from yesterday
+var float today_open = na            // Stores today's open at 09:30
+var float gap_pct = na               // Stores calculated gap %
+var string gap_dir = na              // "Bullish" or "Bearish"
+var string gap_cat = na              // Category name
+var string fill_prob = na            // Probability text
+var string bias_text = na            // Strategy bias
+var bool gap_filled = false          // Track if gap is filled
+var line fill_line = na              // Reference to the drawn line
+var label info_label = na            // Reference to the drawn label
+
+// -----------------------------------------------------------------------------
+// Logic: Capture Previous Close
+// -----------------------------------------------------------------------------
+// logic: Update tracker on every RTH bar.
+// When a NEW session starts, the value in tracker (from before update) is the last RTH close.
+if is_session_start
+    prev_day_close := closing_price_tracker
+    today_open := open
+    gap_filled := false // Reset for new day
+
+    // Calculate Gap
+    if not na(prev_day_close) and prev_day_close != 0
+        gap_val = today_open - prev_day_close
+        gap_pct := (gap_val / prev_day_close) * 100
+
+        // Direction
+        gap_dir := gap_pct >= 0 ? "Bullish" : "Bearish"
+
+        // Absolute % for classification
+        abs_gap = math.abs(gap_pct)
+
+        // Classification & Stats
+        if abs_gap < 0.2
+            gap_cat := "< 0.2%"
+            fill_prob := prob_xs
+            bias_text := "Fading Bias – Gap Fill Likely"
+        else if abs_gap < 0.4
+            gap_cat := "0.2% - 0.4%"
+            fill_prob := prob_s
+            bias_text := "Fading Bias – Gap Fill Likely"
+        else if abs_gap < 0.7
+            gap_cat := "0.4% - 0.7%"
+            fill_prob := prob_m
+            // Bias transition zone? Prompt says "Small" (Fade) vs "Large/Extreme" (Trend).
+            // Usually 0.4-0.7 is middle ground. I'll default to Fading/Neutral or check if prompt specified.
+            // Prompt: "Small gaps with high fill prob... Large and extreme gaps with low fill prob".
+            // I'll treat <0.4 as Small, >0.7 as Large. 0.4-0.7 is grey area.
+            // Let's call it "Neutral / Wait for Confirmation" or stick to one.
+            // Given the binary choice in prompt, I'll lean towards Trend if > 0.5?
+            // Let's classify <0.4 as Small, >0.4 as trending/neutral?
+            // Actually, usually >0.5% is significant.
+            // I'll set 0.4-0.7 as "Neutral / Monitoring" unless strict compliance requires binary.
+            // Prompt: "Small gaps... Large and extreme gaps...".
+            // It doesn't explicitly handle the middle. I will mark it "Neutral".
+            bias_text := "Neutral / Mixed Bias"
+        else if abs_gap < 1.0
+            gap_cat := "0.7% - 1.0%"
+            fill_prob := prob_l
+            bias_text := "Trend Bias – Breakaway Gap Possible"
+        else if abs_gap < 1.5
+            gap_cat := "1.0% - 1.5%"
+            fill_prob := prob_xl
+            bias_text := "Trend Bias – Breakaway Gap Possible"
+        else
+            gap_cat := "> 1.5%"
+            fill_prob := prob_xxl
+            bias_text := "Trend Bias – Breakaway Gap Possible"
+
+// Update tracker for NEXT day
+if is_in_session
+    closing_price_tracker := close
+
+// -----------------------------------------------------------------------------
+// Gap Fill Logic & Visuals
+// -----------------------------------------------------------------------------
+// Gap Fill Detection
+if is_in_session and not gap_filled and not na(prev_day_close)
+    // Check if price crossed prev_day_close
+    // We check high/low against the target
+    if (low <= prev_day_close and high >= prev_day_close)
+        gap_filled := true
+
+// Draw Visuals (Once per session at start)
+if is_session_start and not na(prev_day_close) and prev_day_close != 0
+    // Color
+    c_gap = gap_pct >= 0 ? color_bullish : color_bearish
+
+    // Draw Line (Previous Day Close)
+    fill_line := line.new(bar_index, prev_day_close, bar_index + 1, prev_day_close, color=color.gray, style=line.style_dashed, width=1)
+
+    // Draw Label
+    lbl_text = "Gap: " + str.tostring(gap_pct, "#.##") + "%\n" +
+               "Dir: " + gap_dir + "\n" +
+               "Cat: " + gap_cat + "\n" +
+               "Prob: " + fill_prob + "\n" +
+               bias_text
+
+    info_label := label.new(bar_index, high + syminfo.mintick * 20, text=lbl_text, color=c_gap, textcolor=color_text, style=label.style_label_down, yloc=yloc.abovebar)
+
+// Extend Line to current bar
+if not na(fill_line)
+    line.set_x2(fill_line, bar_index)
+
+// -----------------------------------------------------------------------------
+// Dashboard Table (Optional Enhancement)
+// -----------------------------------------------------------------------------
+var tbl = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 50), border_color=color.white, border_width=1)
+
+if is_in_session and barstate.islast
+    // Only show if we have data for today
+    if not na(gap_pct)
+        c_gap = gap_pct >= 0 ? color_bullish : color_bearish
+
+        table.cell(tbl, 0, 0, "Gap Direction", text_color=color.white, bgcolor=color.gray)
+        table.cell(tbl, 1, 0, gap_dir, text_color=color.white, bgcolor=c_gap)
+
+        table.cell(tbl, 0, 1, "Gap Size", text_color=color.white, bgcolor=color.gray)
+        table.cell(tbl, 1, 1, str.tostring(gap_pct, "#.##") + "%", text_color=color.white, bgcolor=c_gap)
+
+        table.cell(tbl, 0, 2, "Category", text_color=color.white, bgcolor=color.gray)
+        table.cell(tbl, 1, 2, gap_cat, text_color=color.white, bgcolor=color.black)
+
+        table.cell(tbl, 0, 3, "Fill Prob", text_color=color.white, bgcolor=color.gray)
+        table.cell(tbl, 1, 3, fill_prob, text_color=color.white, bgcolor=color.black)
+
+        table.cell(tbl, 0, 4, "Status", text_color=color.white, bgcolor=color.gray)
+        table.cell(tbl, 1, 4, gap_filled ? "FILLED" : "OPEN", text_color=color.white, bgcolor=gap_filled ? color.gray : c_gap)
