@@ -1,4 +1,7 @@
 //@version=5
+// REPLACE ALL EXISTING CODE WITH THIS SCRIPT
+// This script contains the full logic for the Multi-Range High/Low indicator.
+
 indicator("Multi-Range High/Low", overlay=true)
 
 // --- Inputs ---
