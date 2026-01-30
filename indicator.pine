@@ -1,0 +1,117 @@
+//@version=5
+indicator("Multi-Range High/Low", overlay=true)
+
+// --- Inputs ---
+grp_general = "General Settings"
+tz = input.string("America/New_York", "Timezone", group=grp_general)
+startH = input.int(9, "Session Start Hour", minval=0, maxval=23, group=grp_general)
+startM = input.int(30, "Session Start Minute", minval=0, maxval=59, group=grp_general)
+endH = input.int(16, "Session End Hour", minval=0, maxval=23, group=grp_general)
+endM = input.int(0, "Session End Minute", minval=0, maxval=59, group=grp_general)
+
+// Range 1
+grp_r1 = "Range 1"
+r1_enable = input.bool(true, "Enable Range 1", group=grp_r1)
+r1_dur = input.int(5, "Duration (Minutes)", minval=1, group=grp_r1)
+r1_col_h = input.color(color.green, "High Line Color", group=grp_r1)
+r1_col_l = input.color(color.red, "Low Line Color", group=grp_r1)
+r1_width = input.int(2, "Line Width", minval=1, group=grp_r1)
+
+// Range 2
+grp_r2 = "Range 2"
+r2_enable = input.bool(false, "Enable Range 2", group=grp_r2)
+r2_dur = input.int(15, "Duration (Minutes)", minval=1, group=grp_r2)
+r2_col_h = input.color(color.blue, "High Line Color", group=grp_r2)
+r2_col_l = input.color(color.orange, "Low Line Color", group=grp_r2)
+r2_width = input.int(2, "Line Width", minval=1, group=grp_r2)
+
+// Range 3
+grp_r3 = "Range 3"
+r3_enable = input.bool(false, "Enable Range 3", group=grp_r3)
+r3_dur = input.int(60, "Duration (Minutes)", minval=1, group=grp_r3)
+r3_col_h = input.color(color.purple, "High Line Color", group=grp_r3)
+r3_col_l = input.color(color.yellow, "Low Line Color", group=grp_r3)
+r3_width = input.int(2, "Line Width", minval=1, group=grp_r3)
+
+// --- State Variables ---
+type RangeState
+    float highest
+    float lowest
+    bool active
+    bool completed
+    line line_h
+    line line_l
+
+// Initialize with reset values
+var RangeState s1 = RangeState.new(0.0, 10000000.0, false, false, na, na)
+var RangeState s2 = RangeState.new(0.0, 10000000.0, false, false, na, na)
+var RangeState s3 = RangeState.new(0.0, 10000000.0, false, false, na, na)
+
+// --- Logic ---
+
+// Detect New Day to Reset State
+// We check if the day of month changed in the target timezone
+d_cur = dayofmonth(time, tz)
+d_prev = dayofmonth(time[1], tz)
+is_new_day = d_cur != d_prev
+
+if is_new_day
+    // Reset S1
+    s1.highest := 0.0
+    s1.lowest := 10000000.0
+    s1.active := false
+    s1.completed := false
+    // Reset S2
+    s2.highest := 0.0
+    s2.lowest := 10000000.0
+    s2.active := false
+    s2.completed := false
+    // Reset S3
+    s3.highest := 0.0
+    s3.lowest := 10000000.0
+    s3.active := false
+    s3.completed := false
+
+
+// Calculate Start and End timestamps for the current bar's day
+y = year(time, tz)
+m = month(time, tz)
+d = dayofmonth(time, tz)
+
+sessionStart = timestamp(tz, y, m, d, startH, startM, 0)
+sessionEnd = timestamp(tz, y, m, d, endH, endM, 0)
+
+// Function to process a range
+processRange(RangeState state, bool enable, int dur, color col_h, color col_l, int width) =>
+    if enable
+        // Calculate Range End Time
+        rangeEnd = sessionStart + dur * 60 * 1000
+
+        // Tracking Logic
+        // We track if we are at or past the start, and before the end
+        if time >= sessionStart and time < rangeEnd
+            state.active := true
+            // Capture High/Low
+            if state.highest == 0.0 // Check if reset
+                state.highest := high
+                state.lowest := low
+            else
+                state.highest := math.max(state.highest, high)
+                state.lowest := math.min(state.lowest, low)
+
+        // Finalization Logic
+        // Triggers once we pass the range end, if we were active and haven't completed yet
+        if time >= rangeEnd and state.active and not state.completed
+            // Draw lines
+            // x1 = sessionStart, x2 = sessionEnd
+            // Use line.new
+            state.line_h := line.new(sessionStart, state.highest, sessionEnd, state.highest, xloc=xloc.bar_time, color=col_h, width=width)
+            state.line_l := line.new(sessionStart, state.lowest, sessionEnd, state.lowest, xloc=xloc.bar_time, color=col_l, width=width)
+
+            state.completed := true
+            state.active := false
+
+// Execute for each range
+processRange(s1, r1_enable, r1_dur, r1_col_h, r1_col_l, r1_width)
+processRange(s2, r2_enable, r2_dur, r2_col_h, r2_col_l, r2_width)
+processRange(s3, r3_enable, r3_dur, r3_col_h, r3_col_l, r3_width)
