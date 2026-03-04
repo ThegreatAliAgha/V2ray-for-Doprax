@@ -1,0 +1,78 @@
+// Replace all existing code
+//@version=5
+indicator("Fair Value Gap", shorttitle="FVG", overlay=true, max_boxes_count=500)
+
+// Group: Colors
+bull_color = input.color(color.new(color.green, 80), title="Bullish Gap Color", group="Colors")
+bull_border_color = input.color(color.new(color.green, 50), title="Bullish Gap Border Color", group="Colors")
+bear_color = input.color(color.new(color.red, 80), title="Bearish Gap Color", group="Colors")
+bear_border_color = input.color(color.new(color.red, 50), title="Bearish Gap Border Color", group="Colors")
+
+// Group: Settings
+remove_filled = input.bool(false, title="Remove Box When Filled", group="Settings")
+
+// Group: Time Filter
+use_time_filter = input.bool(false, title="Use Time Filter", group="Time Filter")
+start_hour = input.int(9, title="Start Hour", minval=0, maxval=23, group="Time Filter")
+start_minute = input.int(30, title="Start Minute", minval=0, maxval=59, group="Time Filter")
+end_hour = input.int(16, title="End Hour", minval=0, maxval=23, group="Time Filter")
+end_minute = input.int(0, title="End Minute", minval=0, maxval=59, group="Time Filter")
+
+timezone = "America/New_York"
+
+var bool in_session = true
+if use_time_filter
+    h = hour(time, timezone)
+    m = minute(time, timezone)
+    current_mins = h * 60 + m
+    start_mins = start_hour * 60 + start_minute
+    end_mins = end_hour * 60 + end_minute
+
+    if start_mins <= end_mins
+        in_session := current_mins >= start_mins and current_mins <= end_mins
+    else
+        in_session := current_mins >= start_mins or current_mins <= end_mins
+else
+    in_session := true
+
+var box[] bull_boxes = array.new_box()
+var box[] bear_boxes = array.new_box()
+
+if in_session
+    // Bullish gap: low > high[2]
+    if low > high[2]
+        b = box.new(left=bar_index[2], top=low, right=bar_index, bottom=high[2], border_color=bull_border_color, bgcolor=bull_color)
+        array.push(bull_boxes, b)
+
+    // Bearish gap: high < low[2]
+    if high < low[2]
+        b = box.new(left=bar_index[2], top=low[2], right=bar_index, bottom=high, border_color=bear_border_color, bgcolor=bear_color)
+        array.push(bear_boxes, b)
+
+// Extend and check filled bullish gaps
+if array.size(bull_boxes) > 0
+    for i = array.size(bull_boxes) - 1 to 0
+        b = array.get(bull_boxes, i)
+        // Fully filled if low is less than or equal to the bottom of the gap
+        if low <= box.get_bottom(b)
+            if remove_filled
+                box.delete(b)
+            else
+                box.set_right(b, bar_index)
+            array.remove(bull_boxes, i)
+        else
+            box.set_right(b, bar_index)
+
+// Extend and check filled bearish gaps
+if array.size(bear_boxes) > 0
+    for i = array.size(bear_boxes) - 1 to 0
+        b = array.get(bear_boxes, i)
+        // Fully filled if high is greater than or equal to the top of the gap
+        if high >= box.get_top(b)
+            if remove_filled
+                box.delete(b)
+            else
+                box.set_right(b, bar_index)
+            array.remove(bear_boxes, i)
+        else
+            box.set_right(b, bar_index)
